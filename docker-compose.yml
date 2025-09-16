@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  # Init container to clone and setup arxiv-mcp-server
+  arxiv-init:
+    image: python:3.13-slim
+    container_name: arxiv-init
+    volumes:
+      - arxiv_source:/app/src
+    networks:
+      - arxiv-network
+    command: [
+      "/bin/sh", "-c",
+      "apt-get update && apt-get install -y git curl && 
+       curl -LsSf https://astral.sh/uv/install.sh | sh &&
+       export PATH=\"$HOME/.cargo/bin:$PATH\" &&
+       cd /app/src &&
+       git clone https://github.com/prashalruchiranga/arxiv-mcp-server.git . &&
+       /root/.cargo/bin/uv venv &&
+       /root/.cargo/bin/uv sync &&
+       echo 'ArXiv MCP Server source ready'"
+    ]
+
+  # MCPO wrapper that serves the MCP server via HTTP
+  mcpo-wrapper:
+    image: ghcr.io/open-webui/mcpo:main
+    container_name: arxiv-mcpo-server
+    ports:
+      - "${HOST_PORT:-18001}:8000"
+    environment:
+      - PATH="/app/src/.venv/bin:$PATH"
+      - PYTHONPATH="/app/src/src"
+      # Temporary storage for analysis - not persisted
+      - DOWNLOAD_PATH=/tmp/arxiv_temp
+    volumes:
+      - arxiv_source:/app/src
+      # Use tmpfs for temporary paper storage during analysis
+      - type: tmpfs
+        target: /tmp/arxiv_temp
+        tmpfs:
+          size: 512M
+    networks:
+      - arxiv-network
+    depends_on:
+      arxiv-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    command: [
+      "--port", "8000",
+      "--host", "0.0.0.0",
+      "--",
+      "/app/src/.venv/bin/python",
+      "-m", "arxiv_server.server"
+    ]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health || true"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+volumes:
+  # Only persist the source code, not downloads
+  arxiv_source:
+    driver: local
+
+networks:
+  arxiv-network:
+    driver: bridge
