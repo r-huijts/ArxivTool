@@ -1,0 +1,355 @@
+{
+“name”: “ArXiv Academic Clarifying Agent”,
+“nodes”: [
+{
+“parameters”: {
+“updates”: [
+“message”
+],
+“additionalFields”: {}
+},
+“id”: “telegram-trigger”,
+“name”: “Telegram Trigger”,
+“type”: “n8n-nodes-base.telegramTrigger”,
+“typeVersion”: 1.2,
+“position”: [
+220,
+300
+],
+“credentials”: {
+“telegramApi”: {
+“id”: “telegram_bot_credentials”,
+“name”: “Telegram Bot API”
+}
+}
+},
+{
+“parameters”: {
+“jsCode”: “// Parse Telegram command and manage conversation state\nconst message = $json.message.text || ‘’;\nconst chatId = $json.message.chat.id;\nconst userId = $json.message.from.id;\nconst messageId = $json.message.message_id;\n\n// Create unique conversation key\nconst conversationKey = `conversation_${chatId}`;\n\n// Initialize or retrieve conversation state from static data\nconst staticData = this.getWorkflowStaticData(‘global’);\nif (!staticData.conversations) {\n  staticData.conversations = {};\n}\n\nlet conversation = staticData.conversations[conversationKey] || {\n  state: ‘idle’,\n  query: ‘’,\n  timeframe: null,\n  specificArea: null,\n  authorPreference: null,\n  lastActivity: Date.now()\n};\n\n// Clean up old conversations (older than 10 minutes)\nObject.keys(staticData.conversations).forEach(key => {\n  if (Date.now() - staticData.conversations[key].lastActivity > 600000) {\n    delete staticData.conversations[key];\n  }\n});\n\n// Handle different message types\nif (message.startsWith(’/’)) {\n  // New command - reset conversation\n  const parts = message.split(’ ‘);\n  const cmd = parts[0].toLowerCase();\n  \n  switch(cmd) {\n    case ‘/search’:\n      const initialQuery = parts.slice(1).join(’ ‘);\n      \n      if (!initialQuery || initialQuery.trim() === ‘’) {\n        return {\n          action: ‘ask_initial_query’,\n          chatId: chatId,\n          responseText: ‘🔍 What research topic would you like me to search for?\n\nExamples:\n• "quantum computing"\n• "transformer neural networks"\n• "climate change machine learning"’\n        };\n      }\n      \n      // Check if query is too vague (less than 2 words or contains very general terms)\n      const vagueTriggers = [‘ai’, ‘ml’, ‘quantum’, ‘deep’, ‘machine’, ‘neural’, ‘learning’, ‘computing’, ‘algorithm’, ‘data’];\n      const queryWords = initialQuery.toLowerCase().split(’ ‘);\n      const isVague = queryWords.length < 2 || vagueTriggers.some(trigger => \n        queryWords.includes(trigger) && queryWords.length < 3\n      );\n      \n      if (isVague) {\n        // Start clarification process\n        conversation.state = ‘clarifying_topic’;\n        conversation.query = initialQuery;\n        conversation.lastActivity = Date.now();\n        staticData.conversations[conversationKey] = conversation;\n        \n        return {\n          action: ‘clarify_topic’,\n          chatId: chatId,\n          responseText: `🤔 \"${initialQuery}\" is pretty broad! Let me help you narrow it down:\\n\\n1️⃣ Applications (practical uses)\\n2️⃣ Theory & fundamentals\\n3️⃣ Hardware/implementation\\n4️⃣ Specific algorithms/methods\\n5️⃣ Something else\\n\\nJust type the number or describe what aspect interests you most!`,\n          conversationState: conversation\n        };\n      } else {\n        // Query seems specific enough, ask about timeframe\n        conversation.state = ‘clarifying_timeframe’;\n        conversation.query = initialQuery;\n        conversation.lastActivity = Date.now();\n        staticData.conversations[conversationKey] = conversation;\n        \n        return {\n          action: ‘clarify_timeframe’,\n          chatId: chatId,\n          responseText: `📅 Great! Searching for \"${initialQuery}\"\\n\\nWhat timeframe are you interested in?\\n\\n1️⃣ Last 7 days (bleeding edge)\\n2️⃣ Last 30 days (recent)\\n3️⃣ Last 3 months (broader view)\\n4️⃣ All time (comprehensive)\\n\\nType the number or specify days (e.g., \"14 days\")`,\n          conversationState: conversation\n        };\n      }\n      \n    case ‘/help’:\n      return {\n        action: ‘help’,\n        chatId: chatId,\n        responseText: ‘🤖 **ArXiv Research Assistant**\n\nI help you find and summarize academic papers!\n\n**Commands:**\n/search - Start a research query\n/cancel - Cancel current conversation\n/help - Show this message\n\n**I\’ll ask clarifying questions to give you the best results!**’\n      };\n      \n    case ‘/cancel’:\n      delete staticData.conversations[conversationKey];\n      return {\n        action: ‘cancel’,\n        chatId: chatId,\n        responseText: ‘❌ Conversation cancelled. Use /search to start a new query!’\n      };\n      \n    default:\n      return {\n        action: ‘unknown_command’,\n        chatId: chatId,\n        responseText: ‘Unknown command. Use /help to see available commands.’\n      };\n  }\n} else {\n  // Handle conversation responses\n  if (conversation.state === ‘idle’) {\n    return {\n      action: ‘prompt_command’,\n      chatId: chatId,\n      responseText: ‘Hi! Use /search to start looking for research papers, or /help for more options.’\n    };\n  }\n  \n  // Update last activity\n  conversation.lastActivity = Date.now();\n  \n  if (conversation.state === ‘clarifying_topic’) {\n    // Handle topic clarification\n    const response = message.toLowerCase();\n    let specificArea = ‘’;\n    \n    if (response.includes(‘1’) || response.includes(‘application’)) {\n      specificArea = ‘applications’;\n      conversation.query += ’ applications’;\n    } else if (response.includes(‘2’) || response.includes(‘theory’) || response.includes(‘fundamental’)) {\n      specificArea = ‘theory’;\n      conversation.query += ’ theory fundamentals’;\n    } else if (response.includes(‘3’) || response.includes(‘hardware’) || response.includes(‘implementation’)) {\n      specificArea = ‘hardware’;\n      conversation.query += ’ hardware implementation’;\n    } else if (response.includes(‘4’) || response.includes(‘algorithm’) || response.includes(‘method’)) {\n      specificArea = ‘algorithms’;\n      conversation.query += ’ algorithms methods’;\n    } else {\n      // User provided custom specification\n      specificArea = ‘custom’;\n      conversation.query += ’ ’ + message;\n    }\n    \n    conversation.specificArea = specificArea;\n    conversation.state = ‘clarifying_timeframe’;\n    staticData.conversations[conversationKey] = conversation;\n    \n    return {\n      action: ‘clarify_timeframe’,\n      chatId: chatId,\n      responseText: `📅 Perfect! Now searching for \"${conversation.query}\"\\n\\nWhat timeframe interests you?\\n\\n1️⃣ Last 7 days (bleeding edge)\\n2️⃣ Last 30 days (recent)\\n3️⃣ Last 3 months (broader view)\\n4️⃣ All time (comprehensive)\\n\\nType the number or specify days (e.g., \"14 days\")`,\n      conversationState: conversation\n    };\n    \n  } else if (conversation.state === ‘clarifying_timeframe’) {\n    // Handle timeframe clarification\n    const response = message.toLowerCase();\n    let timeframe = ‘recent’;\n    \n    if (response.includes(‘1’) || response.includes(‘7’)) {\n      timeframe = 7;\n    } else if (response.includes(‘2’) || response.includes(‘30’)) {\n      timeframe = 30;\n    } else if (response.includes(‘3’) || response.includes(‘90’) || response.includes(‘month’)) {\n      timeframe = 90;\n    } else if (response.includes(‘4’) || response.includes(‘all’)) {\n      timeframe = ‘all’;\n    } else {\n      // Try to extract number of days\n      const dayMatch = response.match(/(\d+)\s*days?/);\n      if (dayMatch) {\n        timeframe = parseInt(dayMatch[1]);\n      }\n    }\n    \n    conversation.timeframe = timeframe;\n    conversation.state = ‘clarifying_authors’;\n    staticData.conversations[conversationKey] = conversation;\n    \n    return {\n      action: ‘clarify_authors’,\n      chatId: chatId,\n      responseText: `👥 Almost ready! Any author preferences?\\n\\n1️⃣ No preference (show me everything)\\n2️⃣ Well-known researchers only\\n3️⃣ Specific author (tell me who)\\n4️⃣ Exclude specific authors\\n\\nType the number or author name`,\n      conversationState: conversation\n    };\n    \n  } else if (conversation.state === ‘clarifying_authors’) {\n    // Handle author preferences\n    const response = message.toLowerCase();\n    let authorPreference = ‘none’;\n    \n    if (response.includes(‘1’) || response.includes(‘no preference’)) {\n      authorPreference = ‘none’;\n    } else if (response.includes(‘2’) || response.includes(‘well-known’) || response.includes(‘famous’)) {\n      authorPreference = ‘well-known’;\n    } else if (response.includes(‘3’) || response.includes(‘specific’)) {\n      authorPreference = ‘include:’ + message;\n    } else if (response.includes(‘4’) || response.includes(‘exclude’)) {\n      authorPreference = ‘exclude:’ + message;\n    } else {\n      // Assume they mentioned an author name\n      authorPreference = ‘include:’ + message;\n    }\n    \n    conversation.authorPreference = authorPreference;\n    conversation.state = ‘ready_to_search’;\n    staticData.conversations[conversationKey] = conversation;\n    \n    const timeframeText = typeof conversation.timeframe === ‘number’ \n      ? `last ${conversation.timeframe} days` \n      : conversation.timeframe === ‘all’ ? ‘all time’ : ‘recent papers’;\n    \n    return {\n      action: ‘execute_search’,\n      chatId: chatId,\n      responseText: `🚀 Perfect! Searching now...\\n\\n**Query:** ${conversation.query}\\n**Timeframe:** ${timeframeText}\\n**Authors:** ${authorPreference}\\n\\nI'll send you an email report shortly!`,\n      conversationState: conversation,\n      finalQuery: conversation.query,\n      timeframe: conversation.timeframe,\n      authorPreference: conversation.authorPreference\n    };\n  }\n  \n  // Clean up conversation after search\n  if (conversation.state === ‘ready_to_search’) {\n    delete staticData.conversations[conversationKey];\n  }\n}\n\nreturn {\n  action: ‘error’,\n  chatId: chatId,\n  responseText: ‘Something went wrong. Use /search to start over!’\n};”
+},
+“id”: “conversation-manager”,
+“name”: “Conversation Manager”,
+“type”: “n8n-nodes-base.code”,
+“typeVersion”: 2,
+“position”: [
+440,
+300
+]
+},
+{
+“parameters”: {
+“conditions”: {
+“options”: {
+“caseSensitive”: true,
+“leftValue”: “”,
+“typeValidation”: “strict”
+},
+“conditions”: [
+{
+“id”: “execute-search-condition”,
+“leftValue”: “={{ $json.action }}”,
+“rightValue”: “execute_search”,
+“operator”: {
+“type”: “string”,
+“operation”: “equals”
+}
+}
+],
+“combinator”: “and”
+},
+“options”: {}
+},
+“id”: “action-router”,
+“name”: “Action Router”,
+“type”: “n8n-nodes-base.if”,
+“typeVersion”: 2,
+“position”: [
+660,
+300
+]
+},
+{
+“parameters”: {
+“resource”: “message”,
+“operation”: “sendMessage”,
+“chatId”: “={{ $json.chatId }}”,
+“text”: “={{ $json.responseText }}”,
+“additionalFields”: {
+“parse_mode”: “Markdown”
+}
+},
+“id”: “send-clarification”,
+“name”: “Send Clarification”,
+“type”: “n8n-nodes-base.telegram”,
+“typeVersion”: 1.2,
+“position”: [
+880,
+200
+],
+“credentials”: {
+“telegramApi”: {
+“id”: “telegram_bot_credentials”,
+“name”: “Telegram Bot API”
+}
+}
+},
+{
+“parameters”: {
+“url”: “http://export.arxiv.org/api/query”,
+“options”: {
+“queryParameters”: {
+“parameters”: [
+{
+“name”: “search_query”,
+“value”: “={{ ‘all:’ + $json.finalQuery }}”
+},
+{
+“name”: “start”,
+“value”: “0”
+},
+{
+“name”: “max_results”,
+“value”: “15”
+},
+{
+“name”: “sortBy”,
+“value”: “submittedDate”
+},
+{
+“name”: “sortOrder”,
+“value”: “descending”
+}
+]
+}
+}
+},
+“id”: “arxiv-search”,
+“name”: “ArXiv API Search”,
+“type”: “n8n-nodes-base.httpRequest”,
+“typeVersion”: 4.2,
+“position”: [
+880,
+400
+]
+},
+{
+“parameters”: {
+“jsCode”: “// Parse ArXiv XML response with enhanced filtering based on clarifications\nconst xmlData = $json.data || $json;\nconst searchParams = $input.first().json;\nlet papers = [];\n\n// Basic XML parsing for ArXiv feed\nif (typeof xmlData === ‘string’) {\n  const entryRegex = /<entry>(.*?)<\/entry>/gs;\n  const titleRegex = /<title>(.*?)<\/title>/s;\n  const summaryRegex = /<summary>(.*?)<\/summary>/s;\n  const authorRegex = /<author><name>(.*?)<\/name><\/author>/g;\n  const publishedRegex = /<published>(.*?)<\/published>/s;\n  const linkRegex = /<id>(.*?)<\/id>/s;\n  const categoryRegex = /<category term="(.*?)".*?>/g;\n  \n  let match;\n  let entryCount = 0;\n  \n  while ((match = entryRegex.exec(xmlData)) !== null && entryCount < 15) {\n    const entry = match[1];\n    \n    const titleMatch = titleRegex.exec(entry);\n    const summaryMatch = summaryRegex.exec(entry);\n    const publishedMatch = publishedRegex.exec(entry);\n    const linkMatch = linkRegex.exec(entry);\n    \n    // Extract all authors\n    const authors = [];\n    let authorMatch;\n    const authorRegexForEntry = /<author><name>(.*?)<\/name><\/author>/g;\n    while ((authorMatch = authorRegexForEntry.exec(entry)) !== null) {\n      authors.push(authorMatch[1]);\n    }\n    \n    // Extract categories\n    const categories = [];\n    let categoryMatch;\n    const categoryRegexForEntry = /<category term="(.*?)".*?>/g;\n    while ((categoryMatch = categoryRegexForEntry.exec(entry)) !== null) {\n      categories.push(categoryMatch[1]);\n    }\n    \n    if (titleMatch && summaryMatch) {\n      // Enhanced relevance scoring with clarification context\n      const query = searchParams.finalQuery.toLowerCase();\n      const title = titleMatch[1].toLowerCase();\n      const abstract = summaryMatch[1].toLowerCase();\n      const authorString = authors.join(’ ‘).toLowerCase();\n      \n      let relevanceScore = 0;\n      const queryWords = query.split(’ ‘);\n      \n      // Base scoring\n      queryWords.forEach(word => {\n        if (word.length > 3) {\n          if (title.includes(word)) relevanceScore += 3;\n          if (abstract.includes(word)) relevanceScore += 1;\n        }\n      });\n      \n      // Bonus scoring based on specific area\n      const specificArea = searchParams.conversationState?.specificArea;\n      if (specificArea === ‘applications’) {\n        if (title.includes(‘application’) || abstract.includes(‘practical’) || abstract.includes(‘implementation’)) {\n          relevanceScore += 2;\n        }\n      } else if (specificArea === ‘theory’) {\n        if (title.includes(‘theory’) || abstract.includes(‘theoretical’) || abstract.includes(‘proof’)) {\n          relevanceScore += 2;\n        }\n      } else if (specificArea === ‘hardware’) {\n        if (title.includes(‘hardware’) || abstract.includes(‘chip’) || abstract.includes(‘implementation’)) {\n          relevanceScore += 2;\n        }\n      }\n      \n      // Author preference filtering\n      let includeByAuthor = true;\n      const authorPref = searchParams.authorPreference;\n      if (authorPref && authorPref !== ‘none’) {\n        if (authorPref.startsWith(‘include:’)) {\n          const targetAuthor = authorPref.replace(‘include:’, ‘’).toLowerCase().trim();\n          includeByAuthor = authorString.includes(targetAuthor);\n          if (includeByAuthor) relevanceScore += 3; // Bonus for requested author\n        } else if (authorPref.startsWith(‘exclude:’)) {\n          const excludeAuthor = authorPref.replace(‘exclude:’, ‘’).toLowerCase().trim();\n          includeByAuthor = !authorString.includes(excludeAuthor);\n        } else if (authorPref === ‘well-known’) {\n          // Simple heuristic: well-known authors often have many papers\n          // In a real implementation, you’d check against a database of notable researchers\n          const authorCount = authors.length;\n          if (authorCount >= 3) relevanceScore += 1; // Multi-author papers often from established groups\n        }\n      }\n      \n      // Timeframe filtering\n      const publishedDate = new Date(publishedMatch ? publishedMatch[1] : Date.now());\n      const now = new Date();\n      const timeframe = searchParams.timeframe;\n      \n      let includeByDate = true;\n      if (typeof timeframe === ‘number’) {\n        const daysAgo = new Date(now.getTime() - (timeframe * 24 * 60 * 60 * 1000));\n        includeByDate = publishedDate >= daysAgo;\n      }\n      \n      if (includeByDate && includeByAuthor && relevanceScore > 0) {\n        papers.push({\n          title: titleMatch[1].replace(/\s+/g, ’ ‘).trim(),\n          authors: authors.join(’, ‘),\n          abstract: summaryMatch[1].replace(/\s+/g, ’ ‘).trim().substring(0, 500) + ‘…’,\n          published: publishedMatch ? new Date(publishedMatch[1]).toLocaleDateString() : ‘Unknown’,\n          url: linkMatch ? linkMatch[1] : ‘’,\n          categories: categories.join(’, ‘),\n          relevanceScore: relevanceScore,\n          matchedCriteria: {\n            timeframe: includeByDate,\n            author: includeByAuthor,\n            specificArea: specificArea\n          }\n        });\n      }\n    }\n    entryCount++;\n  }\n  \n  // Sort by relevance score and take top results\n  papers.sort((a, b) => b.relevanceScore - a.relevanceScore);\n  papers = papers.slice(0, 8); // Top 8 most relevant\n}\n\nreturn {\n  papers: papers,\n  totalFound: papers.length,\n  searchParams: searchParams,\n  chatId: searchParams.chatId\n};”
+},
+“id”: “enhanced-parser”,
+“name”: “Enhanced ArXiv Parser”,
+“type”: “n8n-nodes-base.code”,
+“typeVersion”: 2,
+“position”: [
+1100,
+400
+]
+},
+{
+“parameters”: {
+“model”: “gpt-4o-mini”,
+“options”: {
+“temperature”: 0.3,
+“maxTokens”: 1500
+},
+“messages”: {
+“values”: [
+{
+“role”: “system”,
+“content”: “You are an expert academic research assistant. Create insightful, personalized summaries based on the user’s specific research interests and clarifications.\n\nFor each paper, provide:\n1. **Key Innovation**: What’s new or significant about this work?\n2. **Practical Value**: How does this advance the field or solve real problems?\n3. **Relevance**: Why this matters for the user’s specific query\n4. **Quality Indicators**: Citation potential, methodology strength, or novelty\n\nFormat as a professional research brief suitable for busy academics. Use clear headers and concise language.”
+},
+{
+“role”: “user”,
+“content”: “**Research Query Analysis:**\n- Original Query: {{ $json.searchParams.finalQuery }}\n- Specific Focus: {{ $json.searchParams.conversationState?.specificArea || ‘General’ }}\n- Timeframe: {{ typeof $json.searchParams.timeframe === ‘number’ ? $json.searchParams.timeframe + ’ days’ : $json.searchParams.timeframe }}\n- Author Preference: {{ $json.searchParams.authorPreference || ‘None’ }}\n\n**Found {{ $json.totalFound }} Relevant Papers:**\n\n{{ $json.papers.map((paper, index) => `**Paper ${index + 1}: ${paper.title}**\n- Authors: ${paper.authors}\n- Published: ${paper.published}\n- Categories: ${paper.categories}\n- Relevance Score: ${paper.relevanceScore}/10\n- Abstract: ${paper.abstract}\n- URL: ${paper.url}\n\n`).join(’’) }}\n\n**Task:** Create a structured research brief that addresses the user’s specific interests and explains why each paper was selected based on their clarifications.”
+}
+]
+}
+},
+“id”: “contextual-summarizer”,
+“name”: “Contextual AI Summarizer”,
+“type”: “n8n-nodes-langchain.openai”,
+“typeVersion”: 1.4,
+“position”: [
+1320,
+400
+],
+“credentials”: {
+“openAiApi”: {
+“id”: “openai_credentials”,
+“name”: “OpenAI API”
+}
+}
+},
+{
+“parameters”: {
+“jsCode”: “// Format personalized email with conversation context\nconst aiSummary = $json.content[0].text;\nconst data = $input.first().json;\nconst searchParams = data.searchParams;\n\n// Build personalized subject and context\nconst specificArea = searchParams.conversationState?.specificArea || ‘general’;\nconst timeframeText = typeof searchParams.timeframe === ‘number’ \n  ? `last ${searchParams.timeframe} days` \n  : searchParams.timeframe === ‘all’ ? ‘all time’ : ‘recent’;\n\nconst subject = `🎯 ArXiv Research Brief: ${searchParams.finalQuery} (${data.totalFound} papers, ${specificArea} focus)`;\n\n// Create detailed email body\nconst emailBody = `# 🔬 Personalized ArXiv Research Brief\n\n## Your Research Query\n**Search Terms:** ${searchParams.finalQuery}  \n**Focus Area:** ${specificArea.charAt(0).toUpperCase() + specificArea.slice(1)} research  \n**Time Range:** ${timeframeText}  \n**Author Filter:** ${searchParams.authorPreference === 'none' ? 'No preference' : searchParams.authorPreference}  \n**Papers Found:** ${data.totalFound} relevant matches  \n\n---\n\n## 📊 Research Intelligence Summary\n\n${aiSummary}\n\n---\n\n## 📈 Search Quality Metrics\n- **Relevance Filtering:** Advanced scoring based on your clarifications\n- **Time Sensitivity:** ${timeframeText === 'last 7 days' ? '🔥 Cutting-edge' : timeframeText === 'last 30 days' ? '⚡ Recent developments' : '📚 Comprehensive view'}\n- **Focus Accuracy:** Specialized for ${specificArea} applications\n- **Author Matching:** ${searchParams.authorPreference !== 'none' ? '✅ Custom filtered' : '🌐 Broad coverage'}\n\n---\n\n## 🚀 Next Steps Suggestions\n1. **Dive Deeper:** Focus on papers with highest relevance scores (8+)\n2. **Cross-Reference:** Check citation networks between selected papers\n3. **Stay Updated:** Run this search weekly for emerging developments\n4. **Expand Search:** Try related terms like [suggest 2-3 related queries]\n\n---\n\n*📧 This personalized research brief was generated by your ArXiv Academic Agent*  \n*🤖 Powered by conversational AI clarification and contextual analysis*  \n*⏰ Generated: ${new Date().toLocaleString()}*\n\n**🔄 Want different results?** Simply chat with your bot using different clarifications!`;\n\nreturn {\n  emailSubject: subject,\n  emailBody: emailBody,\n  htmlEmailBody: emailBody\n    .replace(/\n/g, ‘<br>’)\n    .replace(/\*\*(.*?)\*\*/g, ‘<strong>$1</strong>’)\n    .replace(/\*(.*?)\*/g, ‘<em>$1</em>’)\n    .replace(/^# (.*?)$/gm, ‘<h1>$1</h1>’)\n    .replace(/^## (.*?)$/gm, ‘<h2>$1</h2>’)\n    .replace(/^### (.*?)$/gm, ‘<h3>$1</h3>’)\n    .replace(/🔥|⚡|📚|✅|🌐|📊|🔬|🎯|📈|🚀|📧|🤖|⏰|🔄/g, ‘’),\n  chatId: data.chatId,\n  papersFound: data.totalFound,\n  searchContext: `${searchParams.finalQuery} (${specificArea} focus)`\n};”
+},
+“id”: “personalized-formatter”,
+“name”: “Personalized Email Formatter”,
+“type”: “n8n-nodes-base.code”,
+“typeVersion”: 2,
+“position”: [
+1540,
+400
+]
+},
+{
+“parameters”: {
+“resource”: “message”,
+“operation”: “send”,
+“to”: “your-email@university.edu”,
+“subject”: “={{ $json.emailSubject }}”,
+“emailType”: “html”,
+“message”: “={{ $json.htmlEmailBody }}”,
+“options”: {
+“appendAttribution”: false
+}
+},
+“id”: “send-personalized-email”,
+“name”: “Send Personalized Email”,
+“type”: “n8n-nodes-base.gmail”,
+“typeVersion”: 2.1,
+“position”: [
+1760,
+400
+],
+“credentials”: {
+“gmailOAuth2”: {
+“id”: “gmail_credentials”,
+“name”: “Gmail OAuth2”
+}
+}
+},
+{
+“parameters”: {
+“resource”: “message”,
+“operation”: “sendMessage”,
+“chatId”: “={{ $json.chatId }}”,
+“text”: “✅ **Research brief delivered!**\n\n📊 Found {{ $json.papersFound }} papers for "{{ $json.searchContext }}"\n📧 Personalized analysis sent to your email\n🎯 Filtered based on your specific clarifications\n\n*Use /search again anytime for new queries!*”,
+“additionalFields”: {
+“parse_mode”: “Markdown”
+}
+},
+“id”: “final-confirmation”,
+“name”: “Send Success Confirmation”,
+“type”: “n8n-nodes-base.telegram”,
+“typeVersion”: 1.2,
+“position”: [
+1980,
+400
+],
+“credentials”: {
+“telegramApi”: {
+“id”: “telegram_bot_credentials”,
+“name”: “Telegram Bot API”
+}
+}
+}
+],
+“connections”: {
+“Telegram Trigger”: {
+“main”: [
+[
+{
+“node”: “Conversation Manager”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Conversation Manager”: {
+“main”: [
+[
+{
+“node”: “Action Router”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Action Router”: {
+“main”: [
+[
+{
+“node”: “ArXiv API Search”,
+“type”: “main”,
+“index”: 0
+}
+],
+[
+{
+“node”: “Send Clarification”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“ArXiv API Search”: {
+“main”: [
+[
+{
+“node”: “Enhanced ArXiv Parser”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Enhanced ArXiv Parser”: {
+“main”: [
+[
+{
+“node”: “Contextual AI Summarizer”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Contextual AI Summarizer”: {
+“main”: [
+[
+{
+“node”: “Personalized Email Formatter”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Personalized Email Formatter”: {
+“main”: [
+[
+{
+“node”: “Send Personalized Email”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+},
+“Send Personalized Email”: {
+“main”: [
+[
+{
+“node”: “Send Success Confirmation”,
+“type”: “main”,
+“index”: 0
+}
+]
+]
+}
+},
+“pinData”: {},
+“settings”: {
+“executionOrder”: “v1”
+},
+“staticData”: {},
+“tags”: [],
+“triggerCount”: 0,
+“updatedAt”: “2025-01-20T12:00:00.000Z”,
+“versionId”: “2”
+}
